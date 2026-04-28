@@ -1,64 +1,141 @@
-import Image from "next/image";
+"use client";
+import { useCallback, useRef, useState } from "react";
+import Sidebar from "@/components/Sidebar";
+import MessageList from "@/components/MessageList";
+import ChatInput from "@/components/ChatInput";
+import ModelBadge from "@/components/ModelBadge";
+import { useChatStream, makeUserMessage } from "@/hooks/useChatStream";
+import { useHistory } from "@/hooks/useHistory";
+import { ActiveModel, Message } from "@/lib/types";
+import { AlertTriangle } from "lucide-react";
 
-export default function Home() {
+export default function HomePage() {
+  const history = useHistory();
+  const [streamingContent, setStreamingContent] = useState("");
+  const [activeModel, setActiveModel] = useState<ActiveModel>("groq");
+  const [error, setError] = useState<string | null>(null);
+  const [prefill, setPrefill] = useState("");
+
+  // Keep a ref to the active chat ID so handleDone never goes stale
+  const activeChatIdRef = useRef<string | null>(null);
+  activeChatIdRef.current = history.activeChatId;
+
+  const handleToken = useCallback((token: string) => {
+    setStreamingContent((prev) => prev + token);
+  }, []);
+
+  const handleDone = useCallback(
+    (fullText: string) => {
+      setStreamingContent("");
+      const chatId = activeChatIdRef.current;
+      if (!chatId || !fullText.trim()) return;
+      // history.updateMessages reads from chatsRef internally, so this is always fresh
+      history.appendAssistantMessage(chatId, fullText);
+    },
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+    [history.appendAssistantMessage]
+  );
+
+  const handleModelSwitch = useCallback((model: ActiveModel) => {
+    setActiveModel(model);
+  }, []);
+
+  const handleError = useCallback((msg: string) => {
+    try {
+      const parsed = JSON.parse(msg);
+      setError(parsed.error ?? parsed.message ?? msg);
+    } catch {
+      setError(msg);
+    }
+    setStreamingContent("");
+  }, []);
+
+  const { isStreaming, sendMessages, abort } = useChatStream({
+    onToken: handleToken,
+    onDone: handleDone,
+    onModelSwitch: handleModelSwitch,
+    onError: handleError,
+  });
+
+  const handleSend = useCallback(
+    (text: string) => {
+      try {
+        setError(null);
+        setPrefill("");
+        let chat = history.activeChat;
+        if (!chat) {
+          chat = history.createChat();
+        }
+        if (!chat) return;
+
+        const userMsg = makeUserMessage(text);
+        const existingMessages: Message[] = chat.messages ?? [];
+        const newMessages: Message[] = [...existingMessages, userMsg];
+
+        const autoTitle =
+          chat.title === "New Chat"
+            ? text.slice(0, 48) + (text.length > 48 ? "…" : "")
+            : undefined;
+
+        history.updateMessages(chat.id, newMessages, autoTitle);
+        sendMessages(newMessages).catch((e: unknown) => setError(String(e)));
+      } catch (e) {
+        setError(String(e));
+      }
+    },
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+    [history.activeChat, history.createChat, history.updateMessages, sendMessages]
+  );
+
+  const handlePromptClick = useCallback((text: string) => {
+    setPrefill(text);
+  }, []);
+
+  const currentMessages = history.activeChat?.messages ?? [];
+
   return (
-    <div className="flex flex-col flex-1 items-center justify-center bg-zinc-50 font-sans dark:bg-black">
-      <main className="flex flex-1 w-full max-w-3xl flex-col items-center justify-between py-32 px-16 bg-white dark:bg-black sm:items-start">
-        <Image
-          className="dark:invert"
-          src="/next.svg"
-          alt="Next.js logo"
-          width={100}
-          height={20}
-          priority
+    <div className="app-shell">
+      <Sidebar
+        chats={history.chats}
+        activeChatId={history.activeChatId}
+        onSelect={history.setActiveChatId}
+        onCreate={history.createChat}
+        onRename={history.renameChat}
+        onDelete={history.deleteChat}
+      />
+
+      <main className="chat-main">
+        <header className="chat-header">
+          <span className="chat-header-title">
+            {history.activeChat?.title ?? "Hailey"}
+          </span>
+          <ModelBadge model={activeModel} />
+        </header>
+
+        <div className="messages-area">
+          <MessageList
+            messages={currentMessages}
+            streamingContent={streamingContent}
+            isStreaming={isStreaming}
+            onPromptClick={handlePromptClick}
+          />
+        </div>
+
+        {error && (
+          <div className="error-toast" role="alert">
+            <AlertTriangle size={15} />
+            <span>{error}</span>
+            <button onClick={() => setError(null)} aria-label="Dismiss error">✕</button>
+          </div>
+        )}
+
+        <ChatInput
+          onSend={handleSend}
+          onStop={abort}
+          isStreaming={isStreaming}
+          disabled={isStreaming}
+          prefill={prefill}
         />
-        <div className="flex flex-col items-center gap-6 text-center sm:items-start sm:text-left">
-          <h1 className="max-w-xs text-3xl font-semibold leading-10 tracking-tight text-black dark:text-zinc-50">
-            To get started, edit the page.tsx file.
-          </h1>
-          <p className="max-w-md text-lg leading-8 text-zinc-600 dark:text-zinc-400">
-            Looking for a starting point or more instructions? Head over to{" "}
-            <a
-              href="https://vercel.com/templates?framework=next.js&utm_source=create-next-app&utm_medium=appdir-template-tw&utm_campaign=create-next-app"
-              className="font-medium text-zinc-950 dark:text-zinc-50"
-            >
-              Templates
-            </a>{" "}
-            or the{" "}
-            <a
-              href="https://nextjs.org/learn?utm_source=create-next-app&utm_medium=appdir-template-tw&utm_campaign=create-next-app"
-              className="font-medium text-zinc-950 dark:text-zinc-50"
-            >
-              Learning
-            </a>{" "}
-            center.
-          </p>
-        </div>
-        <div className="flex flex-col gap-4 text-base font-medium sm:flex-row">
-          <a
-            className="flex h-12 w-full items-center justify-center gap-2 rounded-full bg-foreground px-5 text-background transition-colors hover:bg-[#383838] dark:hover:bg-[#ccc] md:w-[158px]"
-            href="https://vercel.com/new?utm_source=create-next-app&utm_medium=appdir-template-tw&utm_campaign=create-next-app"
-            target="_blank"
-            rel="noopener noreferrer"
-          >
-            <Image
-              className="dark:invert"
-              src="/vercel.svg"
-              alt="Vercel logomark"
-              width={16}
-              height={16}
-            />
-            Deploy Now
-          </a>
-          <a
-            className="flex h-12 w-full items-center justify-center rounded-full border border-solid border-black/[.08] px-5 transition-colors hover:border-transparent hover:bg-black/[.04] dark:border-white/[.145] dark:hover:bg-[#1a1a1a] md:w-[158px]"
-            href="https://nextjs.org/docs?utm_source=create-next-app&utm_medium=appdir-template-tw&utm_campaign=create-next-app"
-            target="_blank"
-            rel="noopener noreferrer"
-          >
-            Documentation
-          </a>
-        </div>
       </main>
     </div>
   );
