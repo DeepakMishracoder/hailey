@@ -195,19 +195,23 @@ function needsWebSearch(messages: Message[]): boolean {
 function buildSystemPrompt(dateCtx: string, searchResults?: string): string {
   const searchCtx = searchResults
     ? `\n=== LIVE WEB SEARCH RESULTS (fetched right now) ===\n${searchResults}\n=== END SEARCH RESULTS ===\n\nINSTRUCTION: Use the above search results to answer. If results mention "today [= DATE]", "tomorrow [= DATE]" etc., those bracket values are the EXACT calendar dates — always use them in your answer.`
-    : "\n(No web search performed for this query — use training knowledge.)";
+    : "";
 
   return `${SYSTEM_PROMPT}
 
+[INTERNAL REFERENCE — DO NOT OUTPUT THIS TO THE USER]
 ${dateCtx}
+[END INTERNAL REFERENCE]
 ${searchCtx}
 
 ABSOLUTE RULES (never break these):
-1. The date/time block above is injected LIVE at request time. It is ALWAYS accurate for the current user. Never say you don't know the date.
-2. When answering time questions (e.g. "what time is it in Miami?"), read the exact time from the LOCAL TIMES block above and state it directly.
-3. When search results contain "tomorrow [= 29 April 2026]" — that bracket is the resolved date. Use it explicitly in your answer.
-4. Never say "I couldn't find" if search results are present — extract whatever info is available and state it.
-5. Prioritize search results over your training data for any real-time facts.`;
+1. The date/time block above is for your INTERNAL USE ONLY. NEVER recite or display the timezone table to the user. Only use it to answer specific date/time questions.
+2. If a user asks "what time is it in Miami?" — answer with just that one city's time in plain conversational language. Do NOT list all timezones.
+3. If a user greets you (hi, hello, hey) — respond naturally and briefly. Never mention the date/time unless they ask.
+4. When answering time questions, read the exact time from the LOCAL TIMES block above and state it directly and concisely.
+5. When search results contain "tomorrow [= 29 April 2026]" — use that exact date in your answer.
+6. Never say "I couldn't find" if search results are present — extract and report what's available.
+7. Prioritize search results over your training data for any real-time facts.`;
 }
 
 // ── Groq streaming ────────────────────────────────────────────────────────────
