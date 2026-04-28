@@ -253,6 +253,8 @@ async function streamFromOpenRouter(messages: Message[], systemPrompt: string): 
 }
 
 // ── SSE transform ─────────────────────────────────────────────────────────────
+// Uses a manual ReadableStream pump — pipeThrough is unreliable on Vercel Edge
+// and causes truncated / garbled responses after the first chunk.
 function createStreamingResponse(upstream: Response, modelUsed: "groq" | "openrouter"): Response {
   const body = upstream.body;
   if (!body) return new Response("No response body", { status: 500 });
@@ -260,32 +262,47 @@ function createStreamingResponse(upstream: Response, modelUsed: "groq" | "openro
   const decoder = new TextDecoder();
   const encoder = new TextEncoder();
   let headerSent = false;
+  let buffer = "";
 
-  const transform = new TransformStream({
-    transform(chunk, controller) {
-      const text = decoder.decode(chunk, { stream: true });
-      for (const line of text.split("\n")) {
-        if (!line.startsWith("data: ")) continue;
-        const data = line.slice(6).trim();
-        if (data === "[DONE]") continue;
-        try {
-          const json = JSON.parse(data);
-          const delta = json.choices?.[0]?.delta?.content;
-          if (delta != null) {
-            if (!headerSent) {
-              controller.enqueue(encoder.encode(`__MODEL__:${modelUsed}\n`));
-              headerSent = true;
-            }
-            controller.enqueue(encoder.encode(delta));
+  const readable = new ReadableStream({
+    async start(controller) {
+      const reader = body.getReader();
+      try {
+        while (true) {
+          const { done, value } = await reader.read();
+          if (done) break;
+
+          buffer += decoder.decode(value, { stream: true });
+          const lines = buffer.split("\n");
+          // Keep the last (potentially incomplete) line in the buffer
+          buffer = lines.pop() ?? "";
+
+          for (const line of lines) {
+            if (!line.startsWith("data: ")) continue;
+            const data = line.slice(6).trim();
+            if (data === "[DONE]") continue;
+            try {
+              const json = JSON.parse(data);
+              const delta = json.choices?.[0]?.delta?.content;
+              if (delta != null) {
+                if (!headerSent) {
+                  controller.enqueue(encoder.encode(`__MODEL__:${modelUsed}\n`));
+                  headerSent = true;
+                }
+                controller.enqueue(encoder.encode(delta));
+              }
+            } catch { /* skip malformed chunk */ }
           }
-        } catch { /* skip malformed */ }
+        }
+      } catch (e) {
+        controller.error(e);
+      } finally {
+        controller.close();
       }
     },
   });
 
-  body.pipeThrough(transform);
-
-  return new Response(transform.readable, {
+  return new Response(readable, {
     headers: {
       "Content-Type": "text/plain; charset=utf-8",
       "X-Model-Used": modelUsed,
